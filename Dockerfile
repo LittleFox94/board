@@ -1,33 +1,42 @@
-FROM debian:stretch
+FROM alpine:3.8 AS build
+
+ADD     . /code
+WORKDIR /code
+RUN     apk add -u --no-cache npm php7  && \
+        npm install -g grunt            && \
+        npm install                     && \
+        grunt build:docker
+
+
+FROM alpine:3.8
 
 # update & install package
-RUN apt-get update && \
-    echo "postfix postfix/mailname string localhost" | debconf-set-selections && \
-    echo "postfix postfix/main_mailer_type string 'Internet Site'" | debconf-set-selections && \
-    TERM=linux DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    cron \
-    curl \
-    imagemagick \
-    jq \
-    libpq5 \
-    nginx \
-    php7.0 \
-    php7.0-cli \
-    php7.0-common \
-    php7.0-curl \
-    php7.0-fpm \
-    php7.0-imagick \
-    php7.0-imap \
-    php7.0-ldap \
-    php7.0-mbstring \
-    php7.0-pgsql \
-    php7.0-xml \
-    postfix \
-    postgresql-client \
-    unzip
+RUN apk add -u --no-cache \
+        bash \
+        curl \
+        jq \
+        msmtp \
+        nginx \
+        php7 \
+        php7-curl \
+        php7-fpm \
+        php7-imagick \
+        php7-imap \
+        php7-json \
+        php7-ldap \
+        php7-mbstring \
+        php7-pdo_pgsql \
+        php7-pgsql \
+        php7-xml \
+        postgresql-client \
+        unzip \
+        tzdata                                                && \
+    sed -i 's/nobody/nginx/g' /etc/php7/php-fpm.d/www.conf    && \
+    echo 'sendmail_path = /usr/bin/msmtp -t' > /etc/php7/php.ini && \
+    rm /etc/nginx/conf.d/default.conf                       
 
 # after initial setup of deps to improve rebuilding speed
-ENV ROOT_DIR=/usr/share/nginx/html \
+ENV ROOT_DIR=/var/lib/nginx/html \
     CONF_FILE=/etc/nginx/conf.d/restyaboard.conf \
     SMTP_DOMAIN=localhost \
     SMTP_USERNAME=root \
@@ -37,28 +46,23 @@ ENV ROOT_DIR=/usr/share/nginx/html \
     TZ=Etc/UTC
 
 # deploy app
-ADD restyaboard-docker.zip /tmp/restyaboard.zip
+COPY --from=0 /code/restyaboard-docker.zip /tmp/restyaboard.zip
 RUN unzip /tmp/restyaboard.zip -d ${ROOT_DIR} && \
     rm /tmp/restyaboard.zip && \
-    chown -R www-data:www-data ${ROOT_DIR}
+    chown -R nginx:nginx ${ROOT_DIR}
 
 # install apps
 ADD docker-scripts/install_apps.sh /tmp/
 RUN chmod +x /tmp/install_apps.sh
 RUN . /tmp/install_apps.sh && \
-    chown -R www-data:www-data ${ROOT_DIR}
+    chown -R nginx:nginx ${ROOT_DIR}
 
 # configure app
 WORKDIR ${ROOT_DIR}
-RUN rm /etc/nginx/sites-enabled/default && \
-    cp restyaboard.conf ${CONF_FILE} && \
+RUN cp restyaboard.conf ${CONF_FILE} && \
     sed -i "s/server_name.*$/server_name \"localhost\";/" ${CONF_FILE} && \
 	sed -i "s|listen 80.*$|listen 80;|" ${CONF_FILE} && \
     sed -i "s|root.*html|root ${ROOT_DIR}|" ${CONF_FILE}
-
-# cleanup
-RUN apt-get autoremove -y --purge && \
-    apt-get clean
 
 # entrypoint
 COPY docker-scripts/docker-entrypoint.sh /
