@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 set -e
 
 if [ "$1" = 'start' ]; then
@@ -14,34 +14,28 @@ if [ "$1" = 'start' ]; then
   echo $TZ > /etc/timezone
   rm /etc/localtime
   cp /usr/share/zoneinfo/$TZ /etc/localtime
-  sed -i "s|;date.timezone = |date.timezone = ${TZ}|" /etc/php/7.0/fpm/php.ini
+  sed -i "s|;date.timezone = |date.timezone = ${TZ}|" /etc/php7/php.ini
 
-  # postfix
-  echo "[${SMTP_SERVER}]:${SMTP_PORT} ${SMTP_USERNAME}:${SMTP_PASSWORD}" > /etc/postfix/sasl_passwd
-  postmap /etc/postfix/sasl_passwd
-  echo "www-data@${SMTP_DOMAIN} ${SMTP_USERNAME}" > /etc/postfix/sender_canonical
-  postmap /etc/postfix/sender_canonical
-  sed -i \
-      -e '/mydomain.*/d' \
-      -e '/myhostname.*/d' \
-      -e '/myorigin.*/d' \
-      -e '/mydestination.*/d' \
-      -e "$ a mydomain = ${SMTP_DOMAIN}" \
-      -e "$ a myhostname = localhost" \
-      -e '$ a myorigin = $mydomain' \
-      -e '$ a mydestination = localhost, $myhostname, localhost.$mydomain' \
-      -e '$ a sender_canonical_maps = hash:/etc/postfix/sender_canonical' \
-      -e "s/#relayhost =.*$/relayhost = [${SMTP_SERVER}]:${SMTP_PORT}/" \
-      -e '/smtp_.*/d' \
-      -e '$ a smtpd_tls_session_cache_database = btree:${data_directory}/smtpd_scache' \
-      -e '$ a smtp_sasl_auth_enable = yes' \
-      -e '$ a smtp_sasl_security_options = noanonymous' \
-      -e '$ a smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd' \
-      -e '$ a smtp_use_tls = yes' \
-      -e '$ a smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt' \
-      -e '$ a smtp_tls_wrappermode = yes' \
-      -e '$ a smtp_tls_security_level = encrypt' \
-      /etc/postfix/main.cf
+  # smtp config
+  cat > /etc/msmtprc <<EOF
+# Set default values for all following accounts.
+defaults
+auth           on
+tls            on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+syslog         on
+
+account        smtp
+host           $SMTP_SERVER
+port           $SMTP_PORT
+from           $SMTP_EMAIL
+user           $SMTP_USERNAME
+password       $SMTP_PASSWORD
+
+# Set a default account
+account default : smtp
+aliases        /etc/aliases
+EOF
 
   # init db
   export PGHOST=${POSTGRES_HOST}
@@ -58,26 +52,32 @@ if [ "$1" = 'start' ]; then
     fi
     sleep 1
   done
-  if [ "$(psql -c '\d')" = "No relations found." ]; then
+  if [ "$(psql -c '\d')" = "" ]; then
     psql -f "${ROOT_DIR}/sql/restyaboard_with_empty_data.sql"
   fi
   set -e
 
-  # cron shell
-  echo "*/5 * * * * ${ROOT_DIR}/server/php/shell/instant_email_notification.sh" >> /var/spool/cron/crontabs/root
-  echo "0 * * * * ${ROOT_DIR}/server/php/shell/periodic_email_notification.sh" >> /var/spool/cron/crontabs/root
-  echo "*/30 * * * * ${ROOT_DIR}/server/php/shell/imap.sh" >> /var/spool/cron/crontabs/root
-  echo "*/5 * * * * ${ROOT_DIR}/server/php/shell/webhook.sh" >> /var/spool/cron/crontabs/root
-  echo "*/5 * * * * ${ROOT_DIR}/server/php/shell/card_due_notification.sh" >> /var/spool/cron/crontabs/root
+  ## cron shell
+  echo "*/5  * * * * bash ${ROOT_DIR}/server/php/shell/instant_email_notification.sh" >> /var/spool/cron/crontabs/root
+  echo "0    * * * * bash ${ROOT_DIR}/server/php/shell/periodic_email_notification.sh" >> /var/spool/cron/crontabs/root
+  echo "*/30 * * * * bash ${ROOT_DIR}/server/php/shell/imap.sh" >> /var/spool/cron/crontabs/root
+  echo "*/5  * * * * bash ${ROOT_DIR}/server/php/shell/webhook.sh" >> /var/spool/cron/crontabs/root
+  echo "*/5  * * * * bash ${ROOT_DIR}/server/php/shell/card_due_notification.sh" >> /var/spool/cron/crontabs/root
+
+  mkdir /run/nginx
+
+  mkdir -p /var/lib/nginx/html/tmp/cache
+  chown -R nginx:nginx /var/lib/nginx/html/tmp/cache
+
+  mkdir -p /var/lib/nginx/html/media
+  chown -R nginx:nginx /var/lib/nginx/html/media
 
   # service start
-  service cron start
-  service php7.0-fpm start
-  service nginx start
-  service postfix start
+  php-fpm7
+  crond -b -L /var/log/cron.log
+  nginx
 
-  # tail log
-  exec tail -f /var/log/nginx/access.log /var/log/nginx/error.log
+  exec tail -F /var/log/nginx/*.log /var/log/cron.log
 fi
 
 exec "$@"
